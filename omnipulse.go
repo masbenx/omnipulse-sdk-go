@@ -46,6 +46,7 @@ type Client struct {
 	logBuffer    []LogEntry
 	spanBuffer   []SpanData
 	metricBuffer []MetricData
+	jobBuffer    []JobData
 	bufferMu     sync.Mutex
 
 	ctx    context.Context
@@ -91,6 +92,7 @@ func New(cfg Config) (*Client, error) {
 		logBuffer:    make([]LogEntry, 0, cfg.BatchSize),
 		spanBuffer:   make([]SpanData, 0, cfg.BatchSize),
 		metricBuffer: make([]MetricData, 0, cfg.BatchSize),
+		jobBuffer:    make([]JobData, 0, cfg.BatchSize),
 	}
 
 	c.logger = newLogger(c)
@@ -138,9 +140,11 @@ func (c *Client) Flush() error {
 	logs := c.logBuffer
 	spans := c.spanBuffer
 	metrics := c.metricBuffer
+	jobs := c.jobBuffer
 	c.logBuffer = make([]LogEntry, 0, c.config.BatchSize)
 	c.spanBuffer = make([]SpanData, 0, c.config.BatchSize)
 	c.metricBuffer = make([]MetricData, 0, c.config.BatchSize)
+	c.jobBuffer = make([]JobData, 0, c.config.BatchSize)
 	c.bufferMu.Unlock()
 
 	var lastErr error
@@ -168,6 +172,17 @@ func (c *Client) Flush() error {
 			lastErr = err
 			if c.config.Debug {
 				fmt.Printf("[omnipulse] failed to send metrics: %v\n", err)
+			}
+		}
+	}
+
+	if len(jobs) > 0 {
+		for _, job := range jobs {
+			if err := c.sendJob(job); err != nil {
+				lastErr = err
+				if c.config.Debug {
+					fmt.Printf("[omnipulse] failed to send job: %v\n", err)
+				}
 			}
 		}
 	}
@@ -251,6 +266,35 @@ func (c *Client) sendMetrics(metrics []MetricData) error {
 	return c.send("/api/ingest/app-metrics", payload)
 }
 
+func (c *Client) sendJob(job JobData) error {
+	return c.send("/api/ingest/app-job", job)
+}
+
+func (c *Client) LogJob(job JobData) {
+	if job.Ts == "" {
+		job.Ts = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	c.bufferMu.Lock()
+	c.jobBuffer = append(c.jobBuffer, job)
+	shouldFlush := len(c.jobBuffer) >= c.config.BatchSize
+	c.bufferMu.Unlock()
+
+	if shouldFlush {
+		go c.Flush()
+	}
+}
+
+type JobData struct {
+	JobName    string `json:"job_name"`
+	Queue      string `json:"queue"`
+	DurationMs int    `json:"duration_ms"`
+	WaitTimeMs int    `json:"wait_time_ms"`
+	Status     string `json:"status"`
+	Error      string `json:"error"`
+	Ts         string `json:"ts"`
+}
+
 func (c *Client) send(endpoint string, payload interface{}) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -290,4 +334,4 @@ func (c *Client) send(endpoint string, payload interface{}) error {
 	return nil
 }
 
-const Version = "1.0.0"
+const Version = "1.1.0"
