@@ -247,16 +247,16 @@ func (c *Client) addMetric(metric MetricData) {
 
 func (c *Client) sendLogs(logs []LogEntry) error {
 	payload := map[string]interface{}{
-		"logs": logs,
+		"entries": logs,
 	}
-	return c.send("/api/ingest/logs", payload)
+	return c.send("/api/ingest/app-logs", payload)
 }
 
 func (c *Client) sendSpans(spans []SpanData) error {
 	payload := map[string]interface{}{
 		"spans": spans,
 	}
-	return c.send("/api/ingest/traces", payload)
+	return c.send("/api/ingest/app-traces", payload)
 }
 
 func (c *Client) sendMetrics(metrics []MetricData) error {
