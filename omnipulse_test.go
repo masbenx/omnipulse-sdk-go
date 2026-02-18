@@ -487,7 +487,7 @@ func TestFlush_SendsLogs(t *testing.T) {
 func TestFlush_SendsSpans(t *testing.T) {
 	var received int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/ingest/traces" {
+		if r.URL.Path != "/api/ingest/app-traces" {
 			return
 		}
 		atomic.AddInt32(&received, 1)
@@ -574,7 +574,7 @@ func TestSend_VerifiesEndpoints(t *testing.T) {
 
 	c.Flush()
 
-	expected := []string{"/api/ingest/logs", "/api/ingest/traces", "/api/ingest/app-metrics", "/api/ingest/app-job"}
+	expected := []string{"/api/ingest/app-logs", "/api/ingest/app-traces", "/api/ingest/app-metrics", "/api/ingest/app-job"}
 	for _, ep := range expected {
 		if !endpoints[ep] {
 			t.Errorf("expected endpoint %q to be called", ep)

@@ -20,10 +20,10 @@ type LogEntry struct {
 	Timestamp   time.Time              `json:"timestamp"`
 	Level       LogLevel               `json:"level"`
 	Message     string                 `json:"message"`
-	ServiceName string                 `json:"service_name,omitempty"`
+	ServiceName string                 `json:"service,omitempty"`
 	TraceID     string                 `json:"trace_id,omitempty"`
 	SpanID      string                 `json:"span_id,omitempty"`
-	Tags        map[string]interface{} `json:"tags,omitempty"`
+	Tags        map[string]interface{} `json:"meta,omitempty"`
 	Host        string                 `json:"host,omitempty"`
 }
 
