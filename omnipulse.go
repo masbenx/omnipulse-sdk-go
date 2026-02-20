@@ -42,6 +42,7 @@ type Client struct {
 	logger     *Logger
 	tracer     *Tracer
 	metrics    *Metrics
+	profiler   *Profiler
 
 	logBuffer    []LogEntry
 	spanBuffer   []SpanData
@@ -98,6 +99,7 @@ func New(cfg Config) (*Client, error) {
 	c.logger = newLogger(c)
 	c.tracer = newTracer(c)
 	c.metrics = newMetrics(c)
+	c.profiler = newProfiler(c)
 
 	// Start background flush worker
 	c.wg.Add(1)
@@ -119,6 +121,11 @@ func (c *Client) Tracer() *Tracer {
 // Metrics returns the metrics instance
 func (c *Client) Metrics() *Metrics {
 	return c.metrics
+}
+
+// Profiler returns the profiler instance
+func (c *Client) Profiler() *Profiler {
+	return c.profiler
 }
 
 // Test sends a test log entry to verify connectivity
