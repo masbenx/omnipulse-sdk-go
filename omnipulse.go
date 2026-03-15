@@ -33,6 +33,8 @@ type Config struct {
 	FlushInterval time.Duration
 	// Timeout for HTTP requests (default: 5s)
 	Timeout time.Duration
+	// EnableProfiling enables continuous CPU profiling (default: false)
+	EnableProfiling bool
 }
 
 // Client is the main OmniPulse SDK client
@@ -102,6 +104,11 @@ func New(cfg Config) (*Client, error) {
 	// Start background flush worker
 	c.wg.Add(1)
 	go c.flushWorker()
+
+	if c.config.EnableProfiling {
+		c.wg.Add(1)
+		go c.startProfiler()
+	}
 
 	return c, nil
 }
