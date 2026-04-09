@@ -45,11 +45,12 @@ type Client struct {
 	tracer     *Tracer
 	metrics    *Metrics
 
-	logBuffer    []LogEntry
-	spanBuffer   []SpanData
-	metricBuffer []MetricData
-	jobBuffer    []JobData
-	bufferMu     sync.Mutex
+	logBuffer      []LogEntry
+	spanBuffer     []SpanData
+	metricBuffer   []MetricData
+	jobBuffer      []JobData
+	requestBuffer  []RequestData
+	bufferMu       sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -91,10 +92,11 @@ func New(cfg Config) (*Client, error) {
 		},
 		ctx:          ctx,
 		cancel:       cancel,
-		logBuffer:    make([]LogEntry, 0, cfg.BatchSize),
-		spanBuffer:   make([]SpanData, 0, cfg.BatchSize),
-		metricBuffer: make([]MetricData, 0, cfg.BatchSize),
-		jobBuffer:    make([]JobData, 0, cfg.BatchSize),
+		logBuffer:      make([]LogEntry, 0, cfg.BatchSize),
+		spanBuffer:     make([]SpanData, 0, cfg.BatchSize),
+		metricBuffer:   make([]MetricData, 0, cfg.BatchSize),
+		jobBuffer:      make([]JobData, 0, cfg.BatchSize),
+		requestBuffer:  make([]RequestData, 0, cfg.BatchSize),
 	}
 
 	c.logger = newLogger(c)
@@ -148,10 +150,13 @@ func (c *Client) Flush() error {
 	spans := c.spanBuffer
 	metrics := c.metricBuffer
 	jobs := c.jobBuffer
+	requests := c.requestBuffer
+	
 	c.logBuffer = make([]LogEntry, 0, c.config.BatchSize)
 	c.spanBuffer = make([]SpanData, 0, c.config.BatchSize)
 	c.metricBuffer = make([]MetricData, 0, c.config.BatchSize)
 	c.jobBuffer = make([]JobData, 0, c.config.BatchSize)
+	c.requestBuffer = make([]RequestData, 0, c.config.BatchSize)
 	c.bufferMu.Unlock()
 
 	var lastErr error
@@ -189,6 +194,17 @@ func (c *Client) Flush() error {
 				lastErr = err
 				if c.config.Debug {
 					fmt.Printf("[omnipulse] failed to send job: %v\n", err)
+				}
+			}
+		}
+	}
+
+	if len(requests) > 0 {
+		for _, req := range requests {
+			if err := c.sendRequest(req); err != nil {
+				lastErr = err
+				if c.config.Debug {
+					fmt.Printf("[omnipulse] failed to send request: %v\n", err)
 				}
 			}
 		}
@@ -277,6 +293,10 @@ func (c *Client) sendJob(job JobData) error {
 	return c.send("/api/ingest/app-job", job)
 }
 
+func (c *Client) sendRequest(req RequestData) error {
+	return c.send("/api/ingest/app-request", req)
+}
+
 func (c *Client) LogJob(job JobData) {
 	if job.Ts == "" {
 		job.Ts = time.Now().UTC().Format(time.RFC3339)
@@ -300,6 +320,35 @@ type JobData struct {
 	Status     string `json:"status"`
 	Error      string `json:"error"`
 	Ts         string `json:"ts"`
+}
+
+type RequestData struct {
+	Timestamp  string `json:"timestamp"`
+	Method     string `json:"method"`
+	Route      string `json:"route"`
+	Status     int    `json:"status"`
+	DurationMs int    `json:"duration_ms"`
+	Env        string `json:"env,omitempty"`
+	TraceID    string `json:"trace_id,omitempty"`
+	RequestID  string `json:"request_id,omitempty"`
+}
+
+func (c *Client) LogRequest(req RequestData) {
+	if req.Timestamp == "" {
+		req.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	}
+	if req.Env == "" {
+		req.Env = c.config.Environment
+	}
+
+	c.bufferMu.Lock()
+	c.requestBuffer = append(c.requestBuffer, req)
+	shouldFlush := len(c.requestBuffer) >= c.config.BatchSize
+	c.bufferMu.Unlock()
+
+	if shouldFlush {
+		go c.Flush()
+	}
 }
 
 func (c *Client) send(endpoint string, payload interface{}) error {

@@ -67,6 +67,15 @@ func FiberMiddleware(client *Client) fiber.Handler {
 			"status_code": fmt.Sprintf("%d", statusCode),
 		})
 
+		// Record App Request for APM
+		client.LogRequest(RequestData{
+			Method:     c.Method(),
+			Route:      c.Route().Path,
+			Status:     statusCode,
+			DurationMs: int(duration.Milliseconds()),
+			TraceID:    span.TraceID,
+		})
+
 		return err
 	}
 }
