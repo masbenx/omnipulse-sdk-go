@@ -106,6 +106,15 @@ func HTTPMiddleware(client *Client) func(http.Handler) http.Handler {
 				"path":        path,
 				"status_code": fmt.Sprintf("%d", rw.statusCode),
 			})
+
+			// Record App Request for APM
+			client.LogRequest(RequestData{
+				Method:     r.Method,
+				Route:      path,
+				Status:     rw.statusCode,
+				DurationMs: int(duration.Milliseconds()),
+				TraceID:    span.TraceID,
+			})
 		})
 	}
 }
