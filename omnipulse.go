@@ -45,12 +45,13 @@ type Client struct {
 	tracer     *Tracer
 	metrics    *Metrics
 
-	logBuffer      []LogEntry
-	spanBuffer     []SpanData
-	metricBuffer   []MetricData
-	jobBuffer      []JobData
-	requestBuffer  []RequestData
-	bufferMu       sync.Mutex
+	logBuffer     []LogEntry
+	spanBuffer    []SpanData
+	metricBuffer  []MetricData
+	jobBuffer     []JobData
+	requestBuffer []RequestData
+	errorBuffer   []ErrorData
+	bufferMu      sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -92,11 +93,12 @@ func New(cfg Config) (*Client, error) {
 		},
 		ctx:          ctx,
 		cancel:       cancel,
-		logBuffer:      make([]LogEntry, 0, cfg.BatchSize),
-		spanBuffer:     make([]SpanData, 0, cfg.BatchSize),
-		metricBuffer:   make([]MetricData, 0, cfg.BatchSize),
-		jobBuffer:      make([]JobData, 0, cfg.BatchSize),
-		requestBuffer:  make([]RequestData, 0, cfg.BatchSize),
+		logBuffer:     make([]LogEntry, 0, cfg.BatchSize),
+		spanBuffer:    make([]SpanData, 0, cfg.BatchSize),
+		metricBuffer:  make([]MetricData, 0, cfg.BatchSize),
+		jobBuffer:     make([]JobData, 0, cfg.BatchSize),
+		requestBuffer: make([]RequestData, 0, cfg.BatchSize),
+		errorBuffer:   make([]ErrorData, 0, cfg.BatchSize),
 	}
 
 	c.logger = newLogger(c)
@@ -151,12 +153,14 @@ func (c *Client) Flush() error {
 	metrics := c.metricBuffer
 	jobs := c.jobBuffer
 	requests := c.requestBuffer
+	errorsData := c.errorBuffer
 	
 	c.logBuffer = make([]LogEntry, 0, c.config.BatchSize)
 	c.spanBuffer = make([]SpanData, 0, c.config.BatchSize)
 	c.metricBuffer = make([]MetricData, 0, c.config.BatchSize)
 	c.jobBuffer = make([]JobData, 0, c.config.BatchSize)
 	c.requestBuffer = make([]RequestData, 0, c.config.BatchSize)
+	c.errorBuffer = make([]ErrorData, 0, c.config.BatchSize)
 	c.bufferMu.Unlock()
 
 	var lastErr error
@@ -210,6 +214,17 @@ func (c *Client) Flush() error {
 		}
 	}
 
+	if len(errorsData) > 0 {
+		for _, eD := range errorsData {
+			if err := c.sendError(eD); err != nil {
+				lastErr = err
+				if c.config.Debug {
+					fmt.Printf("[omnipulse] failed to send error: %v\n", err)
+				}
+			}
+		}
+	}
+
 	return lastErr
 }
 
@@ -239,6 +254,17 @@ func (c *Client) addLog(entry LogEntry) {
 	c.bufferMu.Lock()
 	c.logBuffer = append(c.logBuffer, entry)
 	shouldFlush := len(c.logBuffer) >= c.config.BatchSize
+	c.bufferMu.Unlock()
+
+	if shouldFlush {
+		go c.Flush()
+	}
+}
+
+func (c *Client) addError(errData ErrorData) {
+	c.bufferMu.Lock()
+	c.errorBuffer = append(c.errorBuffer, errData)
+	shouldFlush := len(c.errorBuffer) >= c.config.BatchSize
 	c.bufferMu.Unlock()
 
 	if shouldFlush {
@@ -297,6 +323,10 @@ func (c *Client) sendRequest(req RequestData) error {
 	return c.send("/api/ingest/app-request", req)
 }
 
+func (c *Client) sendError(errData ErrorData) error {
+	return c.send("/api/ingest/app-errors", errData)
+}
+
 func (c *Client) LogJob(job JobData) {
 	if job.Ts == "" {
 		job.Ts = time.Now().UTC().Format(time.RFC3339)
@@ -320,6 +350,15 @@ type JobData struct {
 	Status     string `json:"status"`
 	Error      string `json:"error"`
 	Ts         string `json:"ts"`
+}
+
+type ErrorData struct {
+	Type      string                 `json:"type"`
+	Message   string                 `json:"message"`
+	Stack     string                 `json:"stack,omitempty"`
+	Timestamp string                 `json:"timestamp"`
+	Service   string                 `json:"service,omitempty"`
+	Meta      map[string]interface{} `json:"meta,omitempty"`
 }
 
 type RequestData struct {
@@ -388,6 +427,21 @@ func (c *Client) send(endpoint string, payload interface{}) error {
 	}
 
 	return nil
+}
+func (c *Client) CaptureError(err error, meta map[string]interface{}) {
+	if err == nil {
+		return
+	}
+	
+	errData := ErrorData{
+		Type:      "Error",
+		Message:   err.Error(),
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Service:   c.config.ServiceName,
+		Meta:      meta,
+	}
+
+	c.addError(errData)
 }
 
 const Version = "1.1.0"
