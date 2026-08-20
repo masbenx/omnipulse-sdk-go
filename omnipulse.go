@@ -33,6 +33,8 @@ type Config struct {
 	FlushInterval time.Duration
 	// Timeout for HTTP requests (default: 5s)
 	Timeout time.Duration
+	// HTTPClient overrides the default HTTP client. Intended for tests and custom transports.
+	HTTPClient *http.Client
 	// EnableProfiling enables continuous CPU profiling (default: false)
 	EnableProfiling bool
 }
@@ -89,13 +91,18 @@ func New(cfg Config) (*Client, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	c := &Client{
-		config: cfg,
-		httpClient: &http.Client{
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{
 			Timeout: cfg.Timeout,
-		},
-		ctx:          ctx,
-		cancel:       cancel,
+		}
+	}
+
+	c := &Client{
+		config:         cfg,
+		httpClient:     httpClient,
+		ctx:            ctx,
+		cancel:         cancel,
 		logBuffer:      make([]LogEntry, 0, cfg.BatchSize),
 		spanBuffer:     make([]SpanData, 0, cfg.BatchSize),
 		metricBuffer:   make([]MetricData, 0, cfg.BatchSize),
@@ -163,7 +170,7 @@ func (c *Client) Flush() error {
 	outgoings := c.outgoingBuffer
 	queries := c.queryBuffer
 	caches := c.cacheBuffer
-	
+
 	c.logBuffer = make([]LogEntry, 0, c.config.BatchSize)
 	c.spanBuffer = make([]SpanData, 0, c.config.BatchSize)
 	c.metricBuffer = make([]MetricData, 0, c.config.BatchSize)
@@ -527,7 +534,7 @@ func (c *Client) CaptureError(err error, meta map[string]interface{}) {
 	if err == nil {
 		return
 	}
-	
+
 	errData := ErrorData{
 		Type:      "Error",
 		Message:   err.Error(),

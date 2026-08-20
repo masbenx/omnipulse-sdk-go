@@ -6,10 +6,32 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func testHTTPClient(handler func(*http.Request) int) *http.Client {
+	return &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			status := handler(req)
+			if status == 0 {
+				status = http.StatusOK
+			}
+			return &http.Response{
+				StatusCode: status,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(http.NoBody),
+				Request:    req,
+			}, nil
+		}),
+	}
+}
 
 // --- Client Init Tests ---
 
@@ -441,8 +463,9 @@ func TestMetrics_IncrementDecrement(t *testing.T) {
 // --- Flush & Send Tests ---
 
 func TestFlush_SendsLogs(t *testing.T) {
-	var received int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	received := 0
+	httpClient := testHTTPClient(func(r *http.Request) int {
+		received++
 		// Verify headers
 		if r.Header.Get("X-Ingest-Key") != "test-key" {
 			t.Errorf("expected X-Ingest-Key 'test-key', got %q", r.Header.Get("X-Ingest-Key"))
@@ -465,12 +488,10 @@ func TestFlush_SendsLogs(t *testing.T) {
 			t.Fatalf("json error: %v", err)
 		}
 
-		atomic.AddInt32(&received, 1)
-		w.WriteHeader(200)
-	}))
-	defer srv.Close()
+		return http.StatusOK
+	})
 
-	c, _ := New(Config{APIUrl: srv.URL, IngestKey: "test-key"})
+	c, _ := New(Config{APIUrl: "http://omnipulse.test", IngestKey: "test-key", HTTPClient: httpClient})
 	c.Logger().Info("test log message")
 
 	err := c.Flush()
@@ -478,53 +499,51 @@ func TestFlush_SendsLogs(t *testing.T) {
 		t.Fatalf("flush failed: %v", err)
 	}
 
-	if atomic.LoadInt32(&received) != 1 {
-		t.Errorf("expected 1 request, got %d", atomic.LoadInt32(&received))
+	if received != 1 {
+		t.Errorf("expected 1 request, got %d", received)
 	}
 	c.Close()
 }
 
 func TestFlush_SendsSpans(t *testing.T) {
-	var received int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	received := 0
+	httpClient := testHTTPClient(func(r *http.Request) int {
 		if r.URL.Path != "/api/ingest/app-traces" {
-			return
+			return http.StatusNotFound
 		}
-		atomic.AddInt32(&received, 1)
-		w.WriteHeader(200)
-	}))
-	defer srv.Close()
+		received++
+		return http.StatusOK
+	})
 
-	c, _ := New(Config{APIUrl: srv.URL, IngestKey: "key"})
+	c, _ := New(Config{APIUrl: "http://omnipulse.test", IngestKey: "key", HTTPClient: httpClient})
 	span := c.Tracer().StartSpan("test")
 	span.End()
 
 	c.Flush()
 
-	if atomic.LoadInt32(&received) != 1 {
-		t.Errorf("expected 1 trace request, got %d", atomic.LoadInt32(&received))
+	if received != 1 {
+		t.Errorf("expected 1 trace request, got %d", received)
 	}
 	c.Close()
 }
 
 func TestFlush_SendsMetrics(t *testing.T) {
-	var received int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	received := 0
+	httpClient := testHTTPClient(func(r *http.Request) int {
 		if r.URL.Path != "/api/ingest/app-metrics" {
-			return
+			return http.StatusNotFound
 		}
-		atomic.AddInt32(&received, 1)
-		w.WriteHeader(200)
-	}))
-	defer srv.Close()
+		received++
+		return http.StatusOK
+	})
 
-	c, _ := New(Config{APIUrl: srv.URL, IngestKey: "key"})
+	c, _ := New(Config{APIUrl: "http://omnipulse.test", IngestKey: "key", HTTPClient: httpClient})
 	c.Metrics().Counter("test", 1)
 
 	c.Flush()
 
-	if atomic.LoadInt32(&received) != 1 {
-		t.Errorf("expected 1 metrics request, got %d", atomic.LoadInt32(&received))
+	if received != 1 {
+		t.Errorf("expected 1 metrics request, got %d", received)
 	}
 	c.Close()
 }
@@ -541,12 +560,11 @@ func TestFlush_EmptyBuffers(t *testing.T) {
 }
 
 func TestSend_ServerError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(500)
-	}))
-	defer srv.Close()
+	httpClient := testHTTPClient(func(r *http.Request) int {
+		return http.StatusInternalServerError
+	})
 
-	c, _ := New(Config{APIUrl: srv.URL, IngestKey: "key"})
+	c, _ := New(Config{APIUrl: "http://omnipulse.test", IngestKey: "key", HTTPClient: httpClient})
 	c.Logger().Info("test")
 
 	err := c.Flush()
@@ -558,13 +576,12 @@ func TestSend_ServerError(t *testing.T) {
 
 func TestSend_VerifiesEndpoints(t *testing.T) {
 	endpoints := make(map[string]bool)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	httpClient := testHTTPClient(func(r *http.Request) int {
 		endpoints[r.URL.Path] = true
-		w.WriteHeader(200)
-	}))
-	defer srv.Close()
+		return http.StatusOK
+	})
 
-	c, _ := New(Config{APIUrl: srv.URL, IngestKey: "key"})
+	c, _ := New(Config{APIUrl: "http://omnipulse.test", IngestKey: "key", HTTPClient: httpClient})
 
 	// Add all types
 	c.Logger().Info("log")
