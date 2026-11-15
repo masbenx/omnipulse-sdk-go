@@ -39,7 +39,7 @@ type SpanData struct {
 	SpanID        string                 `json:"span_id"`
 	ParentSpanID  string                 `json:"parent_span_id,omitempty"`
 	Name          string                 `json:"name"`
-	ServiceName   string                 `json:"service_name"`
+	ServiceName   string                 `json:"service"`
 	StartTime     time.Time              `json:"start_time"`
 	EndTime       time.Time              `json:"end_time"`
 	DurationNs    int64                  `json:"duration_ns"`
