@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -50,6 +51,10 @@ type Client struct {
 	metricBuffer   []MetricData
 	jobBuffer      []JobData
 	requestBuffer  []RequestData
+	errorBuffer    []ErrorData
+	outgoingBuffer []OutgoingData
+	queryBuffer    []QueryData
+	cacheBuffer    []CacheData
 	bufferMu       sync.Mutex
 
 	ctx    context.Context
@@ -97,6 +102,10 @@ func New(cfg Config) (*Client, error) {
 		metricBuffer:   make([]MetricData, 0, cfg.BatchSize),
 		jobBuffer:      make([]JobData, 0, cfg.BatchSize),
 		requestBuffer:  make([]RequestData, 0, cfg.BatchSize),
+		errorBuffer:    make([]ErrorData, 0, cfg.BatchSize),
+		outgoingBuffer: make([]OutgoingData, 0, cfg.BatchSize),
+		queryBuffer:    make([]QueryData, 0, cfg.BatchSize),
+		cacheBuffer:    make([]CacheData, 0, cfg.BatchSize),
 	}
 
 	c.logger = newLogger(c)
@@ -151,12 +160,20 @@ func (c *Client) Flush() error {
 	metrics := c.metricBuffer
 	jobs := c.jobBuffer
 	requests := c.requestBuffer
+	errorsData := c.errorBuffer
+	outgoings := c.outgoingBuffer
+	queries := c.queryBuffer
+	caches := c.cacheBuffer
 	
 	c.logBuffer = make([]LogEntry, 0, c.config.BatchSize)
 	c.spanBuffer = make([]SpanData, 0, c.config.BatchSize)
 	c.metricBuffer = make([]MetricData, 0, c.config.BatchSize)
 	c.jobBuffer = make([]JobData, 0, c.config.BatchSize)
 	c.requestBuffer = make([]RequestData, 0, c.config.BatchSize)
+	c.errorBuffer = make([]ErrorData, 0, c.config.BatchSize)
+	c.outgoingBuffer = make([]OutgoingData, 0, c.config.BatchSize)
+	c.queryBuffer = make([]QueryData, 0, c.config.BatchSize)
+	c.cacheBuffer = make([]CacheData, 0, c.config.BatchSize)
 	c.bufferMu.Unlock()
 
 	var lastErr error
@@ -210,6 +227,50 @@ func (c *Client) Flush() error {
 		}
 	}
 
+	if len(errorsData) > 0 {
+		for _, eD := range errorsData {
+			if err := c.sendError(eD); err != nil {
+				lastErr = err
+				if c.config.Debug {
+					fmt.Printf("[omnipulse] failed to send error: %v\n", err)
+				}
+			}
+		}
+	}
+
+	if len(outgoings) > 0 {
+		for _, oD := range outgoings {
+			if err := c.sendOutgoing(oD); err != nil {
+				lastErr = err
+				if c.config.Debug {
+					fmt.Printf("[omnipulse] failed to send outgoing: %v\n", err)
+				}
+			}
+		}
+	}
+
+	if len(queries) > 0 {
+		for _, qD := range queries {
+			if err := c.sendQuery(qD); err != nil {
+				lastErr = err
+				if c.config.Debug {
+					fmt.Printf("[omnipulse] failed to send query: %v\n", err)
+				}
+			}
+		}
+	}
+
+	if len(caches) > 0 {
+		for _, cD := range caches {
+			if err := c.sendCache(cD); err != nil {
+				lastErr = err
+				if c.config.Debug {
+					fmt.Printf("[omnipulse] failed to send cache: %v\n", err)
+				}
+			}
+		}
+	}
+
 	return lastErr
 }
 
@@ -239,6 +300,17 @@ func (c *Client) addLog(entry LogEntry) {
 	c.bufferMu.Lock()
 	c.logBuffer = append(c.logBuffer, entry)
 	shouldFlush := len(c.logBuffer) >= c.config.BatchSize
+	c.bufferMu.Unlock()
+
+	if shouldFlush {
+		go c.Flush()
+	}
+}
+
+func (c *Client) addError(errData ErrorData) {
+	c.bufferMu.Lock()
+	c.errorBuffer = append(c.errorBuffer, errData)
+	shouldFlush := len(c.errorBuffer) >= c.config.BatchSize
 	c.bufferMu.Unlock()
 
 	if shouldFlush {
@@ -297,6 +369,22 @@ func (c *Client) sendRequest(req RequestData) error {
 	return c.send("/api/ingest/app-request", req)
 }
 
+func (c *Client) sendError(errData ErrorData) error {
+	return c.send("/api/ingest/app-errors", errData)
+}
+
+func (c *Client) sendOutgoing(data OutgoingData) error {
+	return c.send("/api/ingest/app-outgoing", data)
+}
+
+func (c *Client) sendQuery(data QueryData) error {
+	return c.send("/api/ingest/app-query", data)
+}
+
+func (c *Client) sendCache(data CacheData) error {
+	return c.send("/api/ingest/app-cache", data)
+}
+
 func (c *Client) LogJob(job JobData) {
 	if job.Ts == "" {
 		job.Ts = time.Now().UTC().Format(time.RFC3339)
@@ -322,12 +410,59 @@ type JobData struct {
 	Ts         string `json:"ts"`
 }
 
+type ErrorData struct {
+	Type      string                 `json:"type"`
+	Message   string                 `json:"message"`
+	Stack     string                 `json:"stack,omitempty"`
+	Timestamp string                 `json:"timestamp"`
+	Service   string                 `json:"service,omitempty"`
+	Meta      map[string]interface{} `json:"meta,omitempty"`
+}
+
 type RequestData struct {
 	Timestamp  string `json:"timestamp"`
 	Method     string `json:"method"`
 	Route      string `json:"route"`
 	Status     int    `json:"status"`
 	DurationMs int    `json:"duration_ms"`
+	Env        string `json:"env,omitempty"`
+	TraceID    string `json:"trace_id,omitempty"`
+	RequestID  string `json:"request_id,omitempty"`
+}
+
+type OutgoingData struct {
+	Timestamp  string `json:"timestamp"`
+	Method     string `json:"method"`
+	URL        string `json:"url"`
+	Status     int    `json:"status"`
+	DurationMs int    `json:"duration_ms"`
+	Error      string `json:"error,omitempty"`
+	Env        string `json:"env,omitempty"`
+	TraceID    string `json:"trace_id,omitempty"`
+	RequestID  string `json:"request_id,omitempty"`
+}
+
+type QueryData struct {
+	Timestamp   string `json:"timestamp"`
+	DBSystem    string `json:"db_system"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Statement   string `json:"statement"`
+	DurationMs  int    `json:"duration_ms"`
+	Rows        int    `json:"rows,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Route       string `json:"route,omitempty"`
+	Env         string `json:"env,omitempty"`
+	TraceID     string `json:"trace_id,omitempty"`
+	RequestID   string `json:"request_id,omitempty"`
+}
+
+type CacheData struct {
+	Timestamp  string `json:"timestamp"`
+	Operation  string `json:"operation"`
+	Key        string `json:"key"`
+	Hit        *bool  `json:"hit,omitempty"`
+	DurationMs int    `json:"duration_ms"`
+	Store      string `json:"store"`
 	Env        string `json:"env,omitempty"`
 	TraceID    string `json:"trace_id,omitempty"`
 	RequestID  string `json:"request_id,omitempty"`
@@ -375,7 +510,7 @@ func (c *Client) send(endpoint string, payload interface{}) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("X-Ingest-Key", c.config.IngestKey)
-	req.Header.Set("User-Agent", fmt.Sprintf("omnipulse-go-sdk/%s", Version))
+	req.Header.Set("User-Agent", fmt.Sprintf("omnipulse-go-sdk/v%s", strings.TrimPrefix(Version, "v")))
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -388,6 +523,63 @@ func (c *Client) send(endpoint string, payload interface{}) error {
 	}
 
 	return nil
+}
+func (c *Client) CaptureError(err error, meta map[string]interface{}) {
+	if err == nil {
+		return
+	}
+	
+	errData := ErrorData{
+		Type:      "Error",
+		Message:   err.Error(),
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Service:   c.config.ServiceName,
+		Meta:      meta,
+	}
+
+	c.addError(errData)
+}
+
+func (c *Client) CaptureOutgoing(data OutgoingData) {
+	if data.Timestamp == "" {
+		data.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	}
+	c.bufferMu.Lock()
+	c.outgoingBuffer = append(c.outgoingBuffer, data)
+	shouldFlush := len(c.outgoingBuffer) >= c.config.BatchSize
+	c.bufferMu.Unlock()
+
+	if shouldFlush {
+		go c.Flush()
+	}
+}
+
+func (c *Client) CaptureQuery(data QueryData) {
+	if data.Timestamp == "" {
+		data.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	}
+	c.bufferMu.Lock()
+	c.queryBuffer = append(c.queryBuffer, data)
+	shouldFlush := len(c.queryBuffer) >= c.config.BatchSize
+	c.bufferMu.Unlock()
+
+	if shouldFlush {
+		go c.Flush()
+	}
+}
+
+func (c *Client) CaptureCache(data CacheData) {
+	if data.Timestamp == "" {
+		data.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	}
+	c.bufferMu.Lock()
+	c.cacheBuffer = append(c.cacheBuffer, data)
+	shouldFlush := len(c.cacheBuffer) >= c.config.BatchSize
+	c.bufferMu.Unlock()
+
+	if shouldFlush {
+		go c.Flush()
+	}
 }
 
 const Version = "1.1.0"
