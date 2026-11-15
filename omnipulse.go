@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -509,7 +510,7 @@ func (c *Client) send(endpoint string, payload interface{}) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("X-Ingest-Key", c.config.IngestKey)
-	req.Header.Set("User-Agent", fmt.Sprintf("omnipulse-go-sdk/%s", Version))
+	req.Header.Set("User-Agent", fmt.Sprintf("omnipulse-go-sdk/v%s", strings.TrimPrefix(Version, "v")))
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
